@@ -61,6 +61,13 @@ export default {
 					'accent-foreground': 'hsl(var(--sidebar-accent-foreground))',
 					border: 'hsl(var(--sidebar-border))',
 					ring: 'hsl(var(--sidebar-ring))'
+				},
+				chat: {
+					DEFAULT: 'hsl(var(--chat-bg))',
+					user: 'hsl(var(--chat-user-bg))',
+					assistant: 'hsl(var(--chat-assistant-bg))',
+					hover: 'hsl(var(--chat-hover))',
+					border: 'hsl(var(--chat-border))'
 				}
 			},
 			borderRadius: {
@@ -89,6 +96,19 @@ export default {
 			animation: {
 				'accordion-down': 'accordion-down 0.2s ease-out',
 				'accordion-up': 'accordion-up 0.2s ease-out'
+			},
+			backgroundImage: {
+				'gradient-primary': 'var(--gradient-primary)',
+				'gradient-secondary': 'var(--gradient-secondary)',
+				'gradient-chat': 'var(--gradient-chat)'
+			},
+			boxShadow: {
+				'glow': 'var(--shadow-glow)',
+				'card': 'var(--shadow-card)'
+			},
+			transitionProperty: {
+				'all': 'var(--transition-all)',
+				'fast': 'var(--transition-fast)'
 			}
 		}
 	},
