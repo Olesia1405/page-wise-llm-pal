@@ -7,8 +7,12 @@ import { ChatMessage } from '@/components/ChatMessage';
 import { ModelSelector, models } from '@/components/ModelSelector';
 import { WebPageAnalyzer } from '@/components/WebPageAnalyzer';
 import { ChatSettings } from '@/components/ChatSettings';
+import { ChatsList } from '@/components/ChatsList';
+import { UserMenu } from '@/components/UserMenu';
 import { Send, Trash2, Brain, Sidebar, X } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
+import { useAuth } from '@/hooks/useAuth';
 
 interface Message {
   id: string;
@@ -19,6 +23,7 @@ interface Message {
 }
 
 export default function AiChatPage() {
+  const { user } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -26,6 +31,8 @@ export default function AiChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [pageContext, setPageContext] = useState<string | null>(null);
   const [analyzedUrl, setAnalyzedUrl] = useState<string | null>(null);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [loadingMessages, setLoadingMessages] = useState(false);
   
   // Settings
   const [temperature, setTemperature] = useState(0.7);
@@ -48,6 +55,104 @@ export default function AiChatPage() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Load messages for selected chat
+  const loadMessages = async (chatId: string) => {
+    setLoadingMessages(true);
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('chat_id', chatId)
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+
+      const formattedMessages = data.map(msg => ({
+        id: msg.id,
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content,
+        timestamp: new Date(msg.created_at),
+        model: msg.model || undefined,
+      }));
+
+      setMessages(formattedMessages);
+    } catch (error) {
+      console.error('Error loading messages:', error);
+      toast({
+        title: "Ошибка",
+        description: "Не удалось загрузить сообщения",
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingMessages(false);
+    }
+  };
+
+  // Create new chat
+  const createNewChat = async (): Promise<string | null> => {
+    if (!user) return null;
+
+    try {
+      const { data, error } = await supabase
+        .from('chats')
+        .insert([
+          {
+            user_id: user.id,
+            title: 'Новый чат',
+          }
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data.id;
+    } catch (error) {
+      console.error('Error creating chat:', error);
+      toast({
+        title: "Ошибка",
+        description: "Не удалось создать чат",
+        variant: "destructive",
+      });
+      return null;
+    }
+  };
+
+  // Save message to database
+  const saveMessage = async (chatId: string, role: 'user' | 'assistant', content: string, model?: string) => {
+    try {
+      const { error } = await supabase
+        .from('messages')
+        .insert([
+          {
+            chat_id: chatId,
+            role,
+            content,
+            model,
+          }
+        ]);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Error saving message:', error);
+      // Don't show error to user for message saving failures
+    }
+  };
+
+  // Update chat title based on first message
+  const updateChatTitle = async (chatId: string, firstMessage: string) => {
+    const title = firstMessage.slice(0, 50) + (firstMessage.length > 50 ? '...' : '');
+    try {
+      const { error } = await supabase
+        .from('chats')
+        .update({ title })
+        .eq('id', chatId);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Error updating chat title:', error);
+    }
+  };
 
   const generateResponse = async (userMessage: string): Promise<string> => {
     // This is a mock response - in a real implementation, you would call the actual API
@@ -72,12 +177,22 @@ export default function AiChatPage() {
   };
 
   const handleSend = async () => {
-    if (!inputMessage.trim() || isLoading) return;
+    if (!inputMessage.trim() || isLoading || !user) return;
 
+    let chatId = currentChatId;
+    
+    // Create new chat if none selected
+    if (!chatId) {
+      chatId = await createNewChat();
+      if (!chatId) return;
+      setCurrentChatId(chatId);
+    }
+
+    const userMessageContent = inputMessage.trim();
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: inputMessage.trim(),
+      content: userMessageContent,
       timestamp: new Date(),
     };
 
@@ -85,8 +200,16 @@ export default function AiChatPage() {
     setInputMessage('');
     setIsLoading(true);
 
+    // Save user message
+    await saveMessage(chatId, 'user', userMessageContent);
+
+    // Update chat title if this is the first message
+    if (messages.length === 0) {
+      await updateChatTitle(chatId, userMessageContent);
+    }
+
     try {
-      const responseContent = await generateResponse(inputMessage.trim());
+      const responseContent = await generateResponse(userMessageContent);
       
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -97,6 +220,9 @@ export default function AiChatPage() {
       };
 
       setMessages(prev => [...prev, assistantMessage]);
+      
+      // Save assistant message
+      await saveMessage(chatId, 'assistant', responseContent, assistantMessage.model);
     } catch (error) {
       toast({
         title: "Ошибка",
@@ -117,6 +243,7 @@ export default function AiChatPage() {
 
   const clearChat = () => {
     setMessages([]);
+    setCurrentChatId(null);
     setPageContext(null);
     setAnalyzedUrl(null);
     toast({
@@ -130,17 +257,29 @@ export default function AiChatPage() {
     setAnalyzedUrl(url);
   };
 
+  const handleChatSelect = (chatId: string) => {
+    setCurrentChatId(chatId);
+    loadMessages(chatId);
+  };
+
+  const handleNewChat = () => {
+    setCurrentChatId(null);
+    setMessages([]);
+    setPageContext(null);
+    setAnalyzedUrl(null);
+  };
+
   return (
     <div className="min-h-screen bg-gradient-chat text-foreground flex">
-      {/* Sidebar */}
+      {/* Sidebar with chats */}
       <div className={`
         ${sidebarOpen ? 'w-80' : 'w-0'} 
         transition-all duration-300 bg-secondary border-r border-chat-border
-        flex-shrink-0 overflow-hidden
+        flex-shrink-0 overflow-hidden flex flex-col
       `}>
-        <div className="p-4 space-y-4 h-full overflow-y-auto">
+        <div className="p-4 border-b border-chat-border">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Настройки</h2>
+            <h2 className="text-lg font-semibold">Чаты</h2>
             <Button
               variant="ghost"
               size="sm"
@@ -149,6 +288,25 @@ export default function AiChatPage() {
             >
               <X className="h-4 w-4" />
             </Button>
+          </div>
+        </div>
+        
+        <ChatsList 
+          selectedChatId={currentChatId}
+          onChatSelect={handleChatSelect}
+          onNewChat={handleNewChat}
+        />
+      </div>
+
+      {/* Settings sidebar */}
+      <div className={`
+        ${sidebarOpen ? 'w-80' : 'w-0'} 
+        transition-all duration-300 bg-secondary border-r border-chat-border
+        flex-shrink-0 overflow-hidden
+      `}>
+        <div className="p-4 space-y-4 h-full overflow-y-auto">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Настройки</h2>
           </div>
           
           <ModelSelector
@@ -209,6 +367,7 @@ export default function AiChatPage() {
               <Trash2 className="h-4 w-4" />
               Очистить
             </Button>
+            <UserMenu />
           </div>
         </div>
 
